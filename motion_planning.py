@@ -5,11 +5,13 @@ from enum import Enum, auto
 
 import numpy as np
 
-from planning_utils import a_star, heuristic, create_grid
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
 from udacidrone.frame_utils import global_to_local
+
+from udacity_stuff import extract_polygons, load_data
+from spejson import prune_graph, create_graph, sample_points, calculate_offset, prune_path
 
 
 class States(Enum):
@@ -21,6 +23,11 @@ class States(Enum):
     DISARMING = auto()
     PLANNING = auto()
 
+def l2_dist(p1, p2):
+    dx = p1[0]-p2[0]
+    dy = p1[1]-p2[1]
+    dz = p1[2]-p2[2]
+    return np.sqrt(dx**2+dy**2+dz**2)
 
 class MotionPlanning(Drone):
 
@@ -41,24 +48,30 @@ class MotionPlanning(Drone):
         self.register_callback(MsgID.STATE, self.state_callback)
 
     def local_position_callback(self):
+        print("position cb")
         if self.flight_state == States.TAKEOFF:
             if -1.0 * self.local_position[2] > 0.95 * self.target_position[2]:
+                print(-1.0 * self.local_position[2])
+                print(0.95 * self.target_position[2])
                 self.waypoint_transition()
         elif self.flight_state == States.WAYPOINT:
-            if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 1.0:
+            if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 2.0:
                 if len(self.waypoints) > 0:
                     self.waypoint_transition()
                 else:
+                    # if no waypoints left
                     if np.linalg.norm(self.local_velocity[0:2]) < 1.0:
                         self.landing_transition()
 
     def velocity_callback(self):
+        print("velocity cb")
         if self.flight_state == States.LANDING:
             if self.global_position[2] - self.global_home[2] < 0.1:
                 if abs(self.local_position[2]) < 0.01:
                     self.disarming_transition()
 
     def state_callback(self):
+        print("state cb")
         if self.in_mission:
             if self.flight_state == States.MANUAL:
                 self.arming_transition()
@@ -66,10 +79,14 @@ class MotionPlanning(Drone):
                 if self.armed:
                     self.plan_path()
             elif self.flight_state == States.PLANNING:
+                print(f'target{self.target_position[2]}')
                 self.takeoff_transition()
             elif self.flight_state == States.DISARMING:
                 if ~self.armed & ~self.guided:
                     self.manual_transition()
+            if self.flight_state == States.LANDING:
+                if l2_dist(self.local_position, self.target_position) < 0.5:
+                    self.disarming_transition()
 
     def arming_transition(self):
         self.flight_state = States.ARMING
@@ -87,7 +104,7 @@ class MotionPlanning(Drone):
         print("waypoint transition")
         self.target_position = self.waypoints.pop(0)
         print('target position', self.target_position)
-        self.cmd_position(self.target_position[0], self.target_position[1], self.target_position[2], self.target_position[3])
+        self.cmd_position(*self.target_position)
 
     def landing_transition(self):
         self.flight_state = States.LANDING
@@ -112,50 +129,73 @@ class MotionPlanning(Drone):
         self.connection._master.write(data)
 
     def plan_path(self):
+        print("planning kurwa")
         self.flight_state = States.PLANNING
-        print("Searching for a path ...")
-        TARGET_ALTITUDE = 5
-        SAFETY_DISTANCE = 5
+        self.set_home_position(*self.global_position)
+        debug = True
 
-        self.target_position[2] = TARGET_ALTITUDE
+        if not debug:
 
-        # TODO: read lat0, lon0 from colliders into floating point values
+            TARGET_ALTITUDE = 5
+            SAFETY_DISTANCE = 5
+
+            self.target_position[2] = TARGET_ALTITUDE
+
+            print("Loading data...")
+            data = load_data('colliders.csv')
+            obstacles = extract_polygons(data)
+
+            print("Sampling points...")
+            np.random.seed(420)
+            points = sample_points(data, obstacles, 1000, 5)
+
+            print("Building graph...")
+            graph, kd_tree = create_graph(points, bf=5, return_tree=True)
+
+            print("Pruning graph...")
+            pruned_graph = prune_graph(graph, obstacles, copy_graph=True)
+
+
+            start = self.local_position
+            goal = (400,400,5)
+
+            # find nodes closest to start and goal
+            (d1,d2),(s_idx,g_idx) = kd_tree.query([start, goal])
+
+            start_node = tuple(*points[s_idx])
+            goal_node = tuple(*points[g_idx])
+
+            assert start_node in graph
+            assert goal_node in graph
+            assert d1 < 50 # m
+            assert d2 < 50 # m
+
+            path = nx.algorithms.shortest_paths.astar.astar_path(pruned_graph, start_node, goal_node) 
         
-        # TODO: set home position to (lon0, lat0, 0)
+        # global_home = self.global_home
+        # global_position = self.global_position
+        # local_position = self.local_position
 
-        # TODO: retrieve current global position
- 
-        # TODO: convert to current local position using global_to_local()
-        
-        print('global home {0}, position {1}, local position {2}'.format(self.global_home, self.global_position,
-                                                                         self.local_position))
-        # Read in obstacle map
-        data = np.loadtxt('colliders.csv', delimiter=',', dtype='Float64', skiprows=2)
-        
-        # Define a grid for a particular altitude and safety margin around obstacles
-        grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
-        print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
-        # Define starting point on the grid (this is just grid center)
-        grid_start = (-north_offset, -east_offset)
-        # TODO: convert start position to current position rather than map center
-        
-        # Set goal as some arbitrary position on the grid
-        grid_goal = (-north_offset + 10, -east_offset + 10)
-        # TODO: adapt to set goal as latitude / longitude position and convert
 
-        # Run A* to find a path from start to goal
-        # TODO: add diagonal motions with a cost of sqrt(2) to your A* implementation
-        # or move to a different search space such as a graph (not done here)
-        print('Local Start and Goal: ', grid_start, grid_goal)
-        path, _ = a_star(grid, heuristic, grid_start, grid_goal)
-        # TODO: prune path to minimize number of waypoints
-        # TODO (if you're feeling ambitious): Try a different approach altogether!
+        path = [(4, 14, 6), (2, 24, 7), (19, 43, 5), (40, 64, 7), (51, 85, 6), (84, 88, 6), (91, 120, 6), (110, 131, 7), (131, 154, 8), (147, 173, 9), (177, 192, 6), (211, 196, 6), (231, 221, 5), (246, 251, 8), (264, 262, 7), (272, 267, 7), (288, 280, 8), (298, 294, 6), (325, 309, 9), (350, 323, 5), (356, 330, 7), (365, 343, 5), (373, 369, 6), (389, 388, 7), (395, 402, 8)]
+        
+        path = [
+            [  30,  -18,    5],
+            [ 110,  114,    5],
+            [ 177,  192,    6],
+            [ 156,  216,    8],
+            [  89,  232,    7],
+            [-134,  241,    9]
+            ]
+            
+        # calculate offsets
+        ANCHOR = (-122.397450, 37.792480)
+        ox, oy = calculate_offset(ANCHOR, self.global_position)
+        ox, oy = int(ox), int(oy)
+        path = [(p[0]+ox, p[1]+oy, p[2], 0) for p in path]
 
-        # Convert path to waypoints
-        waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
-        # Set self.waypoints
-        self.waypoints = waypoints
-        # TODO: send waypoints to sim (this is just for visualization of waypoints)
+        self.waypoints = path
+        self.target_position = path[0]
         self.send_waypoints()
 
     def start(self):
@@ -164,14 +204,11 @@ class MotionPlanning(Drone):
         print("starting connection")
         self.connection.start()
 
-        # Only required if they do threaded
-        # while self.in_mission:
-        #    pass
-
         self.stop_log()
 
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5760, help='Port number')
     parser.add_argument('--host', type=str, default='127.0.0.1', help="host address, i.e. '127.0.0.1'")
@@ -179,6 +216,7 @@ if __name__ == "__main__":
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), timeout=60)
     drone = MotionPlanning(conn)
+
     time.sleep(1)
 
     drone.start()
