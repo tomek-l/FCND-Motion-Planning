@@ -116,3 +116,12 @@ self.send_waypoints()
 The flight execution works.
 
 However, the map is awfuly inconsistent with the 3D environment. Some buildings present in 3D environment are not present on map. This will eventually lead to collisions sometimes.
+
+A video demo is available in [here](https://youtu.be/lCdnUQmgaws).
+
+To execute, do the following:
+
+```shell
+conda activate fcnd
+(fcnd) python3 run.py
+```

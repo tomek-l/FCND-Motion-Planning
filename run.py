@@ -217,7 +217,11 @@ def load_config():
 
 if __name__ == "__main__":
 
-    debug = True
+    debug = False
+
+    # The computation inside the event loop is very slow.
+    # Therefore, I compute the static parts of the environment outside the loop
+    
     if not debug:
         print("Loading data...")
         data = load_data('colliders.csv')
@@ -250,6 +254,5 @@ if __name__ == "__main__":
     upper_right = (37.79606176175873, -122.39287755584702, 10)
 
     drone = MP(conn, graph, kd_tree, points, obstacles, goal_global=upper_right)
-
 
     drone.start()
