@@ -8,12 +8,13 @@ import matplotlib.pyplot as plt
 plt.rcParams['figure.figsize'] = (10, 10)
 
 import copy
+from udacidrone.frame_utils import global_to_local
 from udacity_stuff import extract_polygons, load_data
 from shapely.geometry import Polygon, Point, LineString
 
 import utm
 
-def sample_points(data, polygons, n_points=100, z_range=(5,10)):
+def sample_points(data, polygons, n_points=1000, z_range=(5,10)):
     centers = data[:, 0:3]
     sizes = data[:, 3:6]
     
@@ -94,7 +95,30 @@ def calculate_offset(anchor, position):
     dy = northing_p - northing_a
 
     return dx, dy
-# [(30, -18, 5), (51, 32, 9), (78, 71, 9), (110, 114, 5), (129, 140, 8), (181, 155, 9), (177, 192, 6), (217, 214, 6), (223, 247, 5), (248, 274, 7), (273, 306, 8), (227, 337, 6), (185, 384, 8), (235, 439, 9), (246, 442, 8), (279, 429, 8), (318, 407, 6), (357, 405, 6), (393, 401, 5)]
+
+def latlon2loc(position_global, anchor_global, anchor_local=[0,0]):
+    position = position_global
+    easting_p, northing_p, _, _ = utm.from_latlon(position[0], position[1])
+    easting_a, northing_a, _, _ = utm.from_latlon(anchor_global[0], anchor_global[1])
+
+    lx = easting_p - easting_a
+    ly = northing_p - northing_a
+
+    # in case we don't start from map center
+    lx -= anchor_local[0]
+    ly -= anchor_local[1]
+
+    return lx, ly, position_global[2]
+
+def loc2latlon(pos, anchor=(37.792480, -122.397450)):
+    """
+    local frame to global
+    """
+    x, y, z = pos
+    xa, ya, num, let = utm.from_latlon(*anchor)
+    lat, lon = utm.to_latlon(xa+x, ya+y, num, let)
+    
+    return lat, lon, z
 
 def prune_path(path, polygons):
     pth = np.array(path, copy=True)
@@ -103,7 +127,7 @@ def prune_path(path, polygons):
     idx_to_keep = list(range(l))
     while i<l-2:
         st = path[i]
-        while not collision(st, path[i+2], polygons):
+        while i<l-2 and not collision(st, path[i+2], polygons):
             idx_to_keep.remove(i+1)
             i+=1
         i+=1
@@ -127,9 +151,11 @@ if __name__ == '__main__':
     pruned_graph = prune_graph(graph, obstacles, copy_graph=True)
     # graph = prune_graph(graph, obstacles, copy_graph=False)
 
-
     start = (0,0,5)
-    goal = (-141,255,10)
+
+    ferry_building = (37.7958421,-122.3959688)
+    goal = latlon2loc(ferry_building, anchor_global=(37.792480, -122.397450))
+
 
     # find nodes closest to start and goal
     (d1,d2),(s_idx,g_idx) = kd_tree.query([start, goal])
@@ -145,6 +171,7 @@ if __name__ == '__main__':
     path = nx.algorithms.shortest_paths.astar.astar_path(pruned_graph, start_node, goal_node)
     pruned_path = prune_path(path, obstacles)
 
+    raise RuntimeError
 
     from planning_utils import create_grid
     grid, offset_x, offset_y = create_grid(data, 5, 2)
